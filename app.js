@@ -94,12 +94,13 @@ function parseText(text){
   const clean=String(text||'').replace(/\r/g,'').replace(/[|]/g,'I').trim();
   const lines=clean.split('\n').map(x=>x.replace(/\s{2,}/g,' ').trim()).filter(Boolean);
   const normalized=clean.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.');
-  const labelled=(labels)=>{const re=new RegExp(`(?:${labels.join('|')})\\s*[:：-]?\\s*([^\\n]+)`,'i');return clean.match(re)?.[1]?.trim()||''};
+  const labelled=(labels)=>{const re=new RegExp(`(?:^|\\n)\\s*(?:${labels.join('|')})\\s*[:：-]?\\s*([^\\n]+)`,'i');return clean.match(re)?.[1]?.trim()||''};
   const email=normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||'';
-  const labelledPhone=labelled(['phone','tel','mobile','whatsapp','电话','手机']);
+  const labelledPhone=labelled(['phone','ph0ne','fhome','tel','mobile','whatsapp','电话','手机']);
   const phone=(labelledPhone.match(/\+?\d[\d\s().-]{6,}\d/)||clean.match(/\+?\d[\d\s().-]{7,}\d/))?.[0]?.trim()||'';
-  const companyLine=lines.find(x=>/(ltd|limited|inc|corp|corporation|company|co\.?\s*,?|gmbh|llc|sarl|pty|trading|technology|industrial|enterprise|group|bv|oy|spa|s\.?a\.?|公司|贸易|科技|实业|集团)/i.test(x));
-  const company=(labelled(['company','business','公司','企业'])||companyLine||lines[0]||'').replace(/^(?:company|business|公司|企业)\s*[:：-]?\s*/i,'').trim();
+  const companyLine=lines.find(x=>/\b(?:ltd|limited|inc|corp|corporation|company|co|gmbh|llc|sarl|pty|trading|technology|industrial|enterprise|group|bv|oy|spa|s\.?a\.?)\b|公司|贸易|科技|实业|集团/i.test(x));
+  const firstBusinessLine=lines.find(x=>!/@|(?:contact|email|phone|tel|mobile|whatsapp|联系人|邮箱|电话|手机)\s*[:：-]|\+?\d[\d\s().-]{6,}/i.test(x));
+  const company=(labelled(['company','business','公司','企业'])||companyLine||firstBusinessLine||lines[0]||'').replace(/^(?:company|business|公司|企业)\s*[:：-]?\s*/i,'').replace(/\bLT[O0]\b/i,'LTD').trim();
   let contact=labelled(['contact(?: person)?','name','buyer','manager','联系人','姓名']);
   if(!contact){contact=lines.find(x=>/^[A-Z\u00c0-\u024F\u4e00-\u9fff][A-Z\u00c0-\u024F\u4e00-\u9fff.' -]{2,40}$/i.test(x)&&x!==company&&!/@|www\.|http|\d{3}/i.test(x)&&!/(ltd|limited|company|corp|gmbh|llc|trading|公司|贸易)/i.test(x))||''}
   const title=labelled(['title','position','job','职务','职位']);
@@ -108,6 +109,11 @@ function parseText(text){
   const source=/alibaba|inquiry|询盘|订单|trade assurance/i.test(clean)?'Alibaba截图':'名片识别';
   return{company,contact,title,country,email,phone,product,source,notes:clean.slice(0,1200)}
 }
+
+function ocrEditDistance(a,b){a=String(a||'').toLowerCase();b=String(b||'').toLowerCase();const row=Array.from({length:b.length+1},(_,i)=>i);for(let i=1;i<=a.length;i++){let prev=row[0];row[0]=i;for(let j=1;j<=b.length;j++){const old=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));prev=old}}return row[b.length]}
+function extractSupplementalEmail(text){const normalized=String(text||'').replace(/\s+/g,'').replace(/[|]/g,'I');return normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||''}
+function extractSupplementalPhone(text){const candidates=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean).map(x=>({raw:x,digits:(x.match(/\d/g)||[]).length})).filter(x=>x.digits>=7).sort((a,b)=>b.digits-a.digits);return candidates[0]?.raw.match(/\+?\d[\d\s().-]{5,}\d/)?.[0]?.trim()||''}
+function alignContactWithEmail(contact,email){if(!contact||!email)return contact;const words=contact.trim().split(/\s+/),mailWords=email.split('@')[0].split(/[._-]+/).filter(Boolean);if(words.length<2||mailWords.length<2)return contact;const cap=s=>s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();const first=ocrEditDistance(words[0],mailWords[0])<=2?cap(mailWords[0]):words[0],last=ocrEditDistance(words.at(-1),mailWords.at(-1))<=2?cap(mailWords.at(-1)):words.at(-1);return [first,...words.slice(1,-1),last].join(' ')}
 async function enhanceOcrImage(file){
   const bitmap=await createImageBitmap(file,{imageOrientation:'from-image'}),maxSide=Math.max(bitmap.width,bitmap.height),scale=Math.min(3,Math.max(1,2200/maxSide)),pad=36;
   const canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale)+pad*2;canvas.height=Math.round(bitmap.height*scale)+pad*2;
@@ -135,7 +141,11 @@ async function recognize(file){
       usedSecondPass=true;setProgress(82,'正在复核细小文字');await worker.setParameters({tessedit_pageseg_mode:'11',preserve_interword_spaces:'1',user_defined_dpi:'300'});
       const second=await worker.recognize(file),secondScore=ocrScore(second);if(secondScore>bestScore){best=second;bestScore=secondScore}
     }
-    const v=parseText(best.data.text||''),f=$('#ocrForm');Object.entries(v).forEach(([k,val])=>f.elements[k]&&val&&(f.elements[k].value=val));$('#ocrType').textContent=v.source+(usedSecondPass?' · 已复核':'');$('#ocrConfidence').textContent='置信度 '+Math.round(best.data.confidence||0)+'%';updateOcrSaveState();setProgress(100,'识别完成，请确认并修正字段')
+    const v=parseText(best.data.text||'');
+    if(!v.email){setProgress(88,'正在复核邮箱');await worker.setParameters({tessedit_pageseg_mode:'11',tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%+-@',preserve_interword_spaces:'1'});const extra=await worker.recognize(file);v.email=extractSupplementalEmail(extra.data.text)}
+    if(!v.phone){setProgress(94,'正在复核电话');await worker.setParameters({tessedit_pageseg_mode:'11',tessedit_char_whitelist:'0123456789+().- ',preserve_interword_spaces:'1'});const extra=await worker.recognize(file);v.phone=extractSupplementalPhone(extra.data.text)}
+    v.contact=alignContactWithEmail(v.contact,v.email);
+    const f=$('#ocrForm');Object.entries(v).forEach(([k,val])=>f.elements[k]&&val&&(f.elements[k].value=val));$('#ocrType').textContent=v.source+(usedSecondPass?' · 已复核':'');$('#ocrConfidence').textContent='置信度 '+Math.round(best.data.confidence||0)+'%';updateOcrSaveState();setProgress(100,'识别完成，请确认并修正字段')
   }catch(error){console.error(error);updateOcrSaveState();setProgress(0,'识别失败，可手动填写后建立客户')}
 }
 async function saveOcr(){const f=$('#ocrForm');if(!f.reportValidity())return;const button=$('#saveOcrCustomer');button.disabled=true;button.textContent='正在建立…';try{const d=new FormData(f),company=String(d.get('company')||'').trim(),contact=String(d.get('contact')||'').trim(),dueValue=String(d.get('nextFollowAt')||''),due=new Date(dueValue).toISOString(),c={id:uid('c'),stage:'lead',initial:initials(company),company,contactName:contact,title:d.get('title')||'联系人',country:d.get('country'),source:d.get('source'),value:'待评估',owner:currentMembership?.name||'未分配',email:d.get('email'),phone:d.get('phone'),product:d.get('product'),notes:d.get('notes'),nextFollowAt:due,nextAction:d.get('nextAction'),histories:[]};state.customers.unshift(c);state.tasks.unshift({id:uid('t'),customerId:c.id,title:c.nextAction,dueAt:due,completed:false});state.imports.unshift({id:uid('import'),company,createdAt:new Date().toISOString(),source:c.source});log(c.id,'智能识别导入并建档');save();$('#ocrModal').classList.remove('show');renderAll();route('detail',c.id);toast('客户和跟进任务已建立')}catch(error){console.error(error);toast('建立客户失败，请检查必填字段')}finally{button.textContent='确认并建立客户';updateOcrSaveState()}}
