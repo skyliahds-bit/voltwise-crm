@@ -60,6 +60,7 @@
     .ai-hero{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(250px,.7fr);gap:13px;margin-bottom:13px}.ai-setup{padding:20px;background:linear-gradient(135deg,#0f172a,#173566);color:#fff}.ai-setup h2{font-size:19px;margin:5px 0 8px}.ai-setup p{font-size:11px;line-height:1.7;color:#cbd5e1;margin:0 0 16px}.ai-setup .primary{background:#2563eb}.ai-source{padding:18px}.ai-source-list{display:grid;gap:8px;margin-top:13px}.ai-source-row{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:10px}.ai-source-row small{color:var(--muted)}.campaign-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}.campaign-card{padding:15px}.campaign-card h3{font-size:13px;margin:0 0 6px}.campaign-card p{font-size:9px;color:var(--muted);line-height:1.55;min-height:42px}.campaign-meta{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:12px 0}.campaign-meta div{background:#f5f8fc;border-radius:8px;padding:8px}.campaign-meta label{font-size:8px;color:var(--muted);display:block}.campaign-meta b{font-size:10px;display:block;margin-top:3px}.campaign-actions{display:flex;gap:7px;border-top:1px solid var(--line);padding-top:11px}.campaign-actions button{flex:1}.safe-note{display:flex;gap:9px;align-items:flex-start;background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a;border-radius:11px;padding:11px;font-size:10px;line-height:1.55;margin-top:13px}.danger-btn{border:1px solid #fecaca;background:#fff;color:#b42318;border-radius:8px;padding:6px 9px;font-size:9px}.danger-btn:disabled{opacity:.42;cursor:not-allowed}.trash-note{background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;border-radius:11px;padding:11px 13px;font-size:10px;line-height:1.55;margin-bottom:12px}
     @media(max-width:980px){.ai-hero{grid-template-columns:1fr}.campaign-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:760px){.campaign-grid{grid-template-columns:1fr}.ai-setup{padding:16px}}
+    .compact-schedule{grid-column:1/-1;max-width:390px}.compact-schedule-row{display:grid;grid-template-columns:minmax(180px,1fr) 110px;gap:8px;margin-top:6px}.compact-schedule-row input{min-height:38px;color:#334155;background:#fff}.compact-schedule-hint{display:block;margin-top:5px;color:#94a3b8;font-size:9px;font-weight:400}@media(max-width:520px){.compact-schedule{max-width:none}.compact-schedule-row{grid-template-columns:minmax(0,1fr) 105px}}
   </style>
 </head>
 <body>
@@ -163,7 +164,7 @@
   <div class="toast" id="toast">操作成功</div>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="./app.js?v=20261125-task-schedule-picker-v3"></script>
+  <script src="./app.js?v=20261125-customer-deal-calendar-v4"></script>
   <script>document.getElementById('chooseOcrFile')?.addEventListener('click',()=>{const input=document.getElementById('ocrFileInput');if(input?.showPicker)input.showPicker();else input?.click()})</script>
 </body>
 </html>
