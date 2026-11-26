@@ -118,15 +118,18 @@ function parseText(text){
   const clean=String(text||'').replace(/\r/g,'').replace(/[|]/g,'I').trim();
   const lines=clean.split('\n').map(x=>x.replace(/\s{2,}/g,' ').trim()).filter(Boolean);
   const normalized=clean.replace(/\s*@\s*/g,'@').replace(/\s*\.\s*/g,'.');
-  const labelled=(labels)=>{const re=new RegExp(`(?:^|\\n)\\s*(?:${labels.join('|')})\\s*[:：-]?\\s*([^\\n]+)`,'i');return clean.match(re)?.[1]?.trim()||''};
+  const labelled=(labels)=>{const re=new RegExp(`(?:^|\\n)[ \\t]*(?:${labels.join('|')})(?=[ \\t:：-])(?:[ \\t]*[:：-][ \\t]*|[ \\t]+)([^\\n]+)`,'i');return clean.match(re)?.[1]?.trim()||''};
   const email=normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||'';
   const labelledPhone=labelled(['phone','ph0ne','fhome','tel','mobile','whatsapp','电话','手机']);
   const phone=(labelledPhone.match(/\+?\d[\d\s().-]{6,}\d/)||clean.match(/\+?\d[\d\s().-]{7,}\d/))?.[0]?.trim()||'';
   const companyLine=lines.find(x=>/\b(?:ltd|limited|inc|corp|corporation|company|co|gmbh|llc|sarl|pty|trading|technology|industrial|enterprise|group|bv|oy|spa|s\.?a\.?)\b|公司|贸易|科技|实业|集团/i.test(x));
   const firstBusinessLine=lines.find(x=>!/@|(?:contact|email|phone|tel|mobile|whatsapp|联系人|邮箱|电话|手机)\s*[:：-]|\+?\d[\d\s().-]{6,}/i.test(x));
   const company=(labelled(['company','business','公司','企业'])||companyLine||firstBusinessLine||lines[0]||'').replace(/^(?:company|business|公司|企业)\s*[:：-]?\s*/i,'').replace(/\bLT[O0]\b/i,'LTD').trim();
-  let contact=labelled(['contact(?: person)?','name','buyer','manager','联系人','姓名']);
-  if(!contact){contact=lines.find(x=>/^[A-Z\u00c0-\u024F\u4e00-\u9fff][A-Z\u00c0-\u024F\u4e00-\u9fff.' -]{2,40}$/i.test(x)&&x!==company&&!/@|www\.|http|\d{3}/i.test(x)&&!/(ltd|limited|company|corp|gmbh|llc|trading|公司|贸易)/i.test(x))||''}
+  let contact=cleanOcrContact(labelled(['contact(?: person)?','contact name','full name','name','key contact','buyer name','manager name','联系人(?:姓名)?','姓名']));
+  if(!contact){
+    const candidates=lines.map((line,index)=>({value:cleanOcrContact(line),score:scoreOcrContact(line,index,lines,email)})).filter(x=>x.value&&x.value!==company).sort((a,b)=>b.score-a.score);
+    if(candidates[0]?.score>0)contact=candidates[0].value;
+  }
   const title=labelled(['title','position','job','职务','职位']);
   const country=labelled(['country','region','国家','地区']);
   const product=labelled(['product','interested in','requirement','产品','需求']);
@@ -134,10 +137,31 @@ function parseText(text){
   return{company,contact,title,country,email,phone,product,source,notes:clean.slice(0,1200)}
 }
 
-function ocrEditDistance(a,b){a=String(a||'').toLowerCase();b=String(b||'').toLowerCase();const row=Array.from({length:b.length+1},(_,i)=>i);for(let i=1;i<=a.length;i++){let prev=row[0];row[0]=i;for(let j=1;j<=b.length;j++){const old=row[j];row[j]=Math.min(row[j]+1,row[j-1]+1,prev+(a[i-1]===b[j-1]?0:1));prev=old}}return row[b.length]}
+function cleanOcrContact(value){
+  let v=String(value||'').replace(/^[\s:：-]+|[\s,;，；:：-]+$/g,'').trim();
+  v=v.replace(/^(?:contact(?: person| name)?|full name|name|key contact|buyer name|manager name|联系人(?:姓名)?|姓名)[ \t]*[:：-]?[ \t]*/i,'').trim();
+  v=v.split(/[ \t]+(?=(?:e-?mail|phone|tel|mobile|whatsapp|wechat|邮箱|电话|手机)[ \t]*[:：-])/i)[0].trim();
+  if(!v||v.length>50)return'';
+  if(/@|https?:\/\/|www\.|\b[A-Z0-9.-]+\.(?:com|net|org|co|cn|de|fr|it|es|ru|uk|io|ai)\b/i.test(v))return'';
+  if((v.match(/\d/g)||[]).length>1)return'';
+  if(/^(?:e-?mail|username|account|whatsapp|wechat|phone|mobile|tel|sales|info|admin|support|service|contact|unknown|n\/?a)$/i.test(v))return'';
+  if(/^(?:owner|founder|director|manager|sales manager|general manager|purchasing manager|buyer|ceo|cfo|cto|职务|职位|联系人)$/i.test(v))return'';
+  if(/\b(?:ltd|limited|inc|corp|corporation|company|co\.?|gmbh|llc|sarl|pty|trading|technology|industrial|enterprise|group)\b|公司|贸易|科技|实业|集团/i.test(v))return'';
+  if(!/[A-Z\u00c0-\u024F\u4e00-\u9fff]{2}/i.test(v))return'';
+  return v;
+}
+function scoreOcrContact(line,index,lines,email){
+  const value=cleanOcrContact(line);if(!value)return-100;
+  let score=0;
+  if(/^(?:[A-Z\u00c0-\u024F][A-Z\u00c0-\u024F.'-]*)(?:\s+[A-Z\u00c0-\u024F][A-Z\u00c0-\u024F.'-]*){1,3}$/i.test(value))score+=5;
+  if(/^[\u4e00-\u9fff·]{2,6}$/.test(value))score+=5;
+  if(/(?:contact|name|联系人|姓名)[ \t]*[:：-]/i.test(line))score+=8;
+  if(/\b(?:owner|founder|director|manager|buyer|ceo|sales|purchasing)\b|负责人|经理|采购|联系人/i.test(lines[index+1]||''))score+=2;
+  const local=String(email||'').split('@')[0].toLowerCase(),parts=value.toLowerCase().split(/\s+/).filter(x=>x.length>1);if(parts.length&&parts.every(x=>local.includes(x)))score+=1;
+  return score;
+}
 function extractSupplementalEmail(text){const normalized=String(text||'').replace(/\s+/g,'').replace(/[|]/g,'I');return normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||''}
 function extractSupplementalPhone(text){const candidates=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean).map(x=>({raw:x,digits:(x.match(/\d/g)||[]).length})).filter(x=>x.digits>=7).sort((a,b)=>b.digits-a.digits);return candidates[0]?.raw.match(/\+?\d[\d\s().-]{5,}\d/)?.[0]?.trim()||''}
-function alignContactWithEmail(contact,email){if(!contact||!email)return contact;const words=contact.trim().split(/\s+/),mailWords=email.split('@')[0].split(/[._-]+/).filter(Boolean);if(words.length<2||mailWords.length<2)return contact;const cap=s=>s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();const first=ocrEditDistance(words[0],mailWords[0])<=2?cap(mailWords[0]):words[0],last=ocrEditDistance(words.at(-1),mailWords.at(-1))<=2?cap(mailWords.at(-1)):words.at(-1);return [first,...words.slice(1,-1),last].join(' ')}
 async function enhanceOcrImage(file){
   const bitmap=await createImageBitmap(file,{imageOrientation:'from-image'}),maxSide=Math.max(bitmap.width,bitmap.height),scale=Math.min(3,Math.max(1,2200/maxSide)),pad=36;
   const canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale)+pad*2;canvas.height=Math.round(bitmap.height*scale)+pad*2;
@@ -168,8 +192,8 @@ async function recognize(file,sourceOverride=''){
     const v=parseText(best.data.text||'');if(sourceOverride&&v.source==='名片识别')v.source=sourceOverride;
     if(!v.email){setProgress(88,'正在复核邮箱');await worker.setParameters({tessedit_pageseg_mode:'11',tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%+-@',preserve_interword_spaces:'1'});const extra=await worker.recognize(file);v.email=extractSupplementalEmail(extra.data.text)}
     if(!v.phone){setProgress(94,'正在复核电话');await worker.setParameters({tessedit_pageseg_mode:'11',tessedit_char_whitelist:'0123456789+().- ',preserve_interword_spaces:'1'});const extra=await worker.recognize(file);v.phone=extractSupplementalPhone(extra.data.text)}
-    v.contact=alignContactWithEmail(v.contact,v.email);
-    const f=$('#ocrForm');Object.entries(v).forEach(([k,val])=>f.elements[k]&&val&&(f.elements[k].value=val));$('#ocrType').textContent=v.source+(usedSecondPass?' · 已复核':'');$('#ocrConfidence').textContent='置信度 '+Math.round(best.data.confidence||0)+'%';updateOcrSaveState();setProgress(100,'识别完成，请确认并修正字段')
+    v.contact=cleanOcrContact(v.contact);
+    const f=$('#ocrForm');Object.entries(v).forEach(([k,val])=>f.elements[k]&&val&&(f.elements[k].value=val));$('#ocrType').textContent=v.source+(usedSecondPass?' · 已复核':'');$('#ocrConfidence').textContent='置信度 '+Math.round(best.data.confidence||0)+'% · '+(v.contact?'联系人已校验':'联系人待手动确认');updateOcrSaveState();setProgress(100,v.contact?'识别完成，请确认字段':'识别完成，未可靠识别联系人，请手动填写')
   }catch(error){console.error(error);updateOcrSaveState();setProgress(0,'识别失败，可手动填写后建立客户')}
 }
 async function saveOcr(){const f=$('#ocrForm');syncScheduleField(f.querySelector('.schedule-field'));if(!f.reportValidity())return;const button=$('#saveOcrCustomer');button.disabled=true;button.textContent='正在建立…';try{const d=new FormData(f),company=String(d.get('company')||'').trim(),contact=String(d.get('contact')||'').trim(),dueValue=String(d.get('nextFollowAt')||''),due=new Date(dueValue).toISOString(),c={id:uid('c'),stage:'lead',initial:initials(company),company,contactName:contact,title:d.get('title')||'联系人',country:d.get('country'),source:d.get('source'),value:'待评估',owner:currentMembership?.name||'未分配',email:d.get('email'),phone:d.get('phone'),product:d.get('product'),notes:d.get('notes'),nextFollowAt:due,nextAction:d.get('nextAction'),histories:[]};state.customers.unshift(c);upsertNextFollowTask(c,due,c.nextAction,'智能识别');state.imports.unshift({id:uid('import'),company,createdAt:new Date().toISOString(),source:c.source});log(c.id,'智能识别导入并建档');save();$('#ocrModal').classList.remove('show');renderAll();route('detail',c.id);toast('客户和跟进任务已建立')}catch(error){console.error(error);toast('建立客户失败，请检查必填字段')}finally{button.textContent='确认并建立客户';updateOcrSaveState()}}
@@ -184,4 +208,3 @@ $('#customerFilters').onclick=e=>{const b=e.target.closest('.filter');if(!b)retu
 $('#refreshTrash').onclick=renderTrash;
 $('#syncAll').onclick=()=>{if(!state.settings.syncRules.website&&!state.settings.syncRules.alibaba){toast('请先配置同步渠道');return}state.syncLogs.unshift({id:uid('sync'),channel:'已启用渠道',result:'完成检查',note:'未连接正式接口，未产生数据',createdAt:new Date().toISOString()});save();renderSync();toast('同步检查完成')};$('#syncLogs').onclick=()=>{renderSync();toast('日志已刷新')};$('#reportDate').onclick=()=>openAction('选择报表日期',[{name:'start',label:'开始日期',type:'date'},{name:'end',label:'结束日期',type:'date'}],()=>toast('日期范围已更新'));$('#exportReport').onclick=()=>{const csv=['类型,数量',`客户,${state.customers.length}`,`商机,${state.deals.length}`,`任务,${state.tasks.length}`,`订单,${state.orders.length}`].join('\n'),url=URL.createObjectURL(new Blob([csv],{type:'text/csv'})),a=document.createElement('a');a.href=url;a.download='crm-report.csv';a.click();URL.revokeObjectURL(url);toast('报表已导出')};$('#importHistory').onclick=()=>toast(state.imports.length?`已有 ${state.imports.length} 条导入记录`:'暂无导入记录');
 $$('.setting-card').forEach(b=>b.onclick=()=>{activeSetting=b.dataset.setting;renderSettings()});$('#notificationButton').onclick=()=>toast('当前没有新通知');$('#uploadBtn').onclick=()=>$('#fileInput').click();$('#fileInput').onchange=e=>{if(e.target.files[0]){openOcr();recognize(e.target.files[0])}};const drop=$('#dropzone');['dragover','drop'].forEach(t=>drop.addEventListener(t,e=>{e.preventDefault();if(t==='drop'&&e.dataTransfer.files[0]){openOcr();recognize(e.dataTransfer.files[0])}}));$('#menuBtn').onclick=()=>{$('#sidebar').classList.add('open');$('#menuOverlay').classList.add('show')};$('#menuOverlay').onclick=()=>{$('#sidebar').classList.remove('open');$('#menuOverlay').classList.remove('show')};$('#globalSearch').onkeydown=e=>{if(e.key==='Enter'){route('customers');$('#customerSearch').value=e.target.value;renderCustomers('all',e.target.value)}};document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='k'){e.preventDefault();$('#globalSearch').focus()}if(e.key==='Escape')$$('.modal-wrap').forEach(m=>m.classList.remove('show'))});window.addEventListener('hashchange',applyRoute);$$('[data-auth-tab]').forEach(b=>b.onclick=()=>setAuthMode(b.dataset.authTab));$('#authForm').onsubmit=handleAuthSubmit;$('#signOutButton').onclick=async()=>{await supabaseClient.auth.signOut();currentUser=null;currentMembership=null;state=blank();setAuthLoading(false,null);setAuthMode('login');showAuth('已安全退出，请重新输入邮箱和密码')};initSchedulePickers();renderAll();applyRoute();initCloud();
-
