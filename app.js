@@ -162,6 +162,35 @@ function scoreOcrContact(line,index,lines,email){
 }
 function extractSupplementalEmail(text){const normalized=String(text||'').replace(/\s+/g,'').replace(/[|]/g,'I');return normalized.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]||''}
 function extractSupplementalPhone(text){const candidates=String(text||'').split(/\n+/).map(x=>x.trim()).filter(Boolean).map(x=>({raw:x,digits:(x.match(/\d/g)||[]).length})).filter(x=>x.digits>=7).sort((a,b)=>b.digits-a.digits);return candidates[0]?.raw.match(/\+?\d[\d\s().-]{5,}\d/)?.[0]?.trim()||''}
+function bytesToBase64(bytes){let binary='';const size=32768;for(let i=0;i<bytes.length;i+=size)binary+=String.fromCharCode(...bytes.subarray(i,i+size));return btoa(binary)}
+async function prepareVisionPayload(file){
+  let blob=file;
+  if(file.size>2500000){
+    const bitmap=await createImageBitmap(file,{imageOrientation:'from-image'}),maxSide=Math.max(bitmap.width,bitmap.height),scale=Math.min(1,2400/maxSide),canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close?.();
+    blob=await new Promise((resolve,reject)=>canvas.toBlob(value=>value?resolve(value):reject(new Error('图片压缩失败')),'image/jpeg',.94));
+  }
+  return{image:bytesToBase64(new Uint8Array(await blob.arrayBuffer())),mimeType:blob.type||file.type||'image/jpeg'}
+}
+function visionText(value,max=160){return String(value||'').replace(/\s+/g,' ').trim().slice(0,max)}
+function visionConfidence(data,key){const value=Number(data?.confidence?.[key]);return Number.isFinite(value)?Math.max(0,Math.min(1,value)):0}
+function normalizeVisionResult(data,sourceOverride=''){
+  const fields=data?.fields||{},confidence=data?.confidence||{};
+  const email=(visionText(fields.email,180).match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)||[])[0]||'';
+  const phone=visionText(fields.phone,80),phoneDigits=(phone.match(/\d/g)||[]).length;
+  const contactCandidate=cleanOcrContact(visionText(fields.contact,80)),emailLocal=email.split('@')[0]?.toLowerCase()||'',contact=visionConfidence({confidence},'contact')>=.72&&contactCandidate.toLowerCase()!==emailLocal?contactCandidate:'';
+  const company=visionConfidence({confidence},'company')>=.5?visionText(fields.company,160):'';
+  const evidence=visionText(data?.evidence?.contact,180),summary=visionText(data?.summary,600);
+  const allowedSources=['名片识别','Alibaba截图','微信截图','WhatsApp截图','其他渠道截图'],detectedSource=sourceOverride||visionText(fields.source,40),source=allowedSources.includes(detectedSource)?detectedSource:'其他渠道截图';
+  return{company,contact,title:visionText(fields.title,100),country:visionText(fields.country,100),email,phone:phoneDigits>=7?phone:'',product:visionText(fields.product,180),source,notes:[summary,evidence?`联系人识别依据：${evidence}`:''].filter(Boolean).join('\n'),confidence:{company:visionConfidence({confidence},'company'),contact:contact?visionConfidence({confidence},'contact'):0,overall:visionConfidence({confidence},'overall')}}
+}
+function applyOcrResult(v,typeLabel,confidenceLabel,progressLabel){const f=$('#ocrForm');Object.entries(v).forEach(([k,val])=>f.elements[k]&&typeof val!=='object'&&val&&(f.elements[k].value=val));$('#ocrType').textContent=typeLabel;$('#ocrConfidence').textContent=confidenceLabel;updateOcrSaveState();setProgress(100,progressLabel)}
+async function recognizeWithVision(file,sourceOverride=''){
+  setProgress(7,'正在进行 AI 视觉识别');const payload=await prepareVisionPayload(file);payload.sourceHint=sourceOverride||'';
+  const{data,error}=await supabaseClient.functions.invoke('extract-customer',{body:payload});if(error)throw error;if(!data?.ok)throw new Error(data?.error||'AI 视觉识别失败');
+  const v=normalizeVisionResult(data,sourceOverride),contactPercent=Math.round(v.confidence.contact*100),overallPercent=Math.round(v.confidence.overall*100);
+  applyOcrResult(v,`${v.source} · AI 视觉`,`综合置信度 ${overallPercent}% · ${v.contact?`联系人 ${contactPercent}%`:'联系人待确认'}`,v.contact?'视觉识别完成，请确认字段':'未可靠识别联系人，请手动填写');return true
+}
 async function enhanceOcrImage(file){
   const bitmap=await createImageBitmap(file,{imageOrientation:'from-image'}),maxSide=Math.max(bitmap.width,bitmap.height),scale=Math.min(3,Math.max(1,2200/maxSide)),pad=36;
   const canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale)+pad*2;canvas.height=Math.round(bitmap.height*scale)+pad*2;
@@ -178,7 +207,8 @@ function updateOcrSaveState(){const f=$('#ocrForm');$('#saveOcrCustomer').disabl
 async function recognize(file,sourceOverride=''){
   if(!file||!file.type.startsWith('image/')){toast('请选择图片');return}
   const url=URL.createObjectURL(file),img=$('#ocrPreview');img.onload=()=>URL.revokeObjectURL(url);img.src=url;img.hidden=false;$('#ocrEmpty').hidden=true;$('#saveOcrCustomer').disabled=true;setProgress(3,'正在优化图片清晰度');
-  if(!window.Tesseract){setProgress(0,'识别组件未加载');return}
+  try{if(await recognizeWithVision(file,sourceOverride))return}catch(error){console.warn('AI 视觉识别不可用，改用本地 OCR',error);setProgress(5,'AI 识别暂不可用，正在使用本地备用识别')}
+  if(!window.Tesseract){setProgress(0,'AI 与本地识别均不可用，可手动填写');return}
   try{
     const enhanced=await enhanceOcrImage(file),worker=await getOcrWorker();
     ocrProgressLogger=m=>{if(m.status==='recognizing text')setProgress(8+Math.round((m.progress||0)*72),'本地 OCR 识别中')};
@@ -193,7 +223,7 @@ async function recognize(file,sourceOverride=''){
     if(!v.email){setProgress(88,'正在复核邮箱');await worker.setParameters({tessedit_pageseg_mode:'11',tessedit_char_whitelist:'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._%+-@',preserve_interword_spaces:'1'});const extra=await worker.recognize(file);v.email=extractSupplementalEmail(extra.data.text)}
     if(!v.phone){setProgress(94,'正在复核电话');await worker.setParameters({tessedit_pageseg_mode:'11',tessedit_char_whitelist:'0123456789+().- ',preserve_interword_spaces:'1'});const extra=await worker.recognize(file);v.phone=extractSupplementalPhone(extra.data.text)}
     v.contact=cleanOcrContact(v.contact);
-    const f=$('#ocrForm');Object.entries(v).forEach(([k,val])=>f.elements[k]&&val&&(f.elements[k].value=val));$('#ocrType').textContent=v.source+(usedSecondPass?' · 已复核':'');$('#ocrConfidence').textContent='置信度 '+Math.round(best.data.confidence||0)+'% · '+(v.contact?'联系人已校验':'联系人待手动确认');updateOcrSaveState();setProgress(100,v.contact?'识别完成，请确认字段':'识别完成，未可靠识别联系人，请手动填写')
+    applyOcrResult(v,v.source+(usedSecondPass?' · 本地复核':' · 本地备用'),'本地置信度 '+Math.round(best.data.confidence||0)+'% · '+(v.contact?'联系人已校验':'联系人待手动确认'),v.contact?'本地识别完成，请确认字段':'本地识别完成，未可靠识别联系人，请手动填写')
   }catch(error){console.error(error);updateOcrSaveState();setProgress(0,'识别失败，可手动填写后建立客户')}
 }
 async function saveOcr(){const f=$('#ocrForm');syncScheduleField(f.querySelector('.schedule-field'));if(!f.reportValidity())return;const button=$('#saveOcrCustomer');button.disabled=true;button.textContent='正在建立…';try{const d=new FormData(f),company=String(d.get('company')||'').trim(),contact=String(d.get('contact')||'').trim(),dueValue=String(d.get('nextFollowAt')||''),due=new Date(dueValue).toISOString(),c={id:uid('c'),stage:'lead',initial:initials(company),company,contactName:contact,title:d.get('title')||'联系人',country:d.get('country'),source:d.get('source'),value:'待评估',owner:currentMembership?.name||'未分配',email:d.get('email'),phone:d.get('phone'),product:d.get('product'),notes:d.get('notes'),nextFollowAt:due,nextAction:d.get('nextAction'),histories:[]};state.customers.unshift(c);upsertNextFollowTask(c,due,c.nextAction,'智能识别');state.imports.unshift({id:uid('import'),company,createdAt:new Date().toISOString(),source:c.source});log(c.id,'智能识别导入并建档');save();$('#ocrModal').classList.remove('show');renderAll();route('detail',c.id);toast('客户和跟进任务已建立')}catch(error){console.error(error);toast('建立客户失败，请检查必填字段')}finally{button.textContent='确认并建立客户';updateOcrSaveState()}}
